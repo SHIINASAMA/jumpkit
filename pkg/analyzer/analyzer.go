@@ -186,8 +186,9 @@ func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult, opt
 		args = append(args, "-L", fmt.Sprintf("%d:%s:%d", localPort, targetAddr, port))
 		args = append(args, "-N")
 	default:
+		args = append(args, "-t")
 		args = append(args, "-p", fmt.Sprintf("%d", port))
-		args = append(args, targetAddr)
+		args = append(args, formatSSHTarget(targetHop, false))
 	}
 
 	cmd := fmt.Sprintf("ssh %s", strings.Join(args, " "))
