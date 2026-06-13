@@ -59,15 +59,19 @@ func (a *Analyzer) Analyze(hops []core.HopConfig) *core.AnalysisResult {
 		hopResult := core.HopResult{HopConfig: hop}
 
 		if resolved {
-			out, err := exec.Execute(sshTarget, "echo ok")
-			hopResult.Output = out
-			hopResult.Err = err
-			hopResult.Command = "echo ok"
-			if err != nil {
-				a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
-				a.log.Print("    %s", err)
-			} else {
+			if i == len(hops)-1 && hop.UseInternalDns {
 				a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
+			} else {
+				out, err := exec.Execute(sshTarget, "echo ok")
+				hopResult.Output = out
+				hopResult.Err = err
+				hopResult.Command = "echo ok"
+				if err != nil {
+					a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
+					a.log.Print("    %s", err)
+				} else {
+					a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
+				}
 			}
 		} else {
 			cmd := resolver.FormatDNSCommand(dnsCmd, targetDomain)
@@ -103,8 +107,7 @@ func (a *Analyzer) Analyze(hops []core.HopConfig) *core.AnalysisResult {
 	result.Summary = generateSummary(hops, result)
 
 	for _, cmd := range result.SSHCommands {
-		a.log.Print("")
-		a.log.Print("%s", cmd.Command)
+		a.log.Print("  %s", cmd.Command)
 	}
 
 	return result

@@ -24,6 +24,7 @@ var (
 	styleTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")).MarginBottom(1)
 	styleOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	styleErr    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	styleCmd    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 )
 
 type field int
@@ -52,7 +53,6 @@ const (
 	modeEditText
 	modeSelect
 	modeRunning
-	modeResult
 	modeSavePrompt
 )
 
@@ -67,6 +67,7 @@ type model struct {
 	logs       []string
 	statusMsg  string
 	saveBuf    string
+	finished   bool
 }
 
 func InitialModel(loadPath string) model {
@@ -90,7 +91,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logs = append(m.logs, msg.line)
 		return m, waitForLog(msg.ch)
 	case doneMsg:
-		m.mode = modeResult
+		m.finished = true
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -109,11 +110,6 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateSelect(k)
 	case modeRunning:
 		return m.updateRunning(k)
-	case modeResult:
-		if k == "esc" {
-			m.mode = modeNav
-		}
-		return m, nil
 	case modeSavePrompt:
 		return m.updateSavePrompt(k)
 	}
@@ -165,6 +161,7 @@ func (m model) updateNav(k string) (tea.Model, tea.Cmd) {
 	case "r":
 		if len(m.hops) >= 1 {
 			m.mode = modeRunning
+			m.finished = false
 			m.logs = nil
 			ch := make(chan string, 64)
 			return m, tea.Batch(m.runAnalysis(ch), waitForLog(ch))
@@ -271,6 +268,7 @@ func (m model) updateRunning(k string) (tea.Model, tea.Cmd) {
 	case "esc", "ctrl+c":
 		m.mode = modeNav
 		m.logs = nil
+		m.finished = false
 		return m, nil
 	}
 	return m, nil
@@ -311,16 +309,16 @@ func (m model) updateSavePrompt(k string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+type channelWriter struct {
+	ch  chan string
+	buf []byte
+}
+
 type logMsg struct {
 	line string
 	ch   chan string
 }
 type doneMsg struct{}
-
-type channelWriter struct {
-	ch  chan string
-	buf []byte
-}
 
 func (w *channelWriter) Write(p []byte) (n int, err error) {
 	w.buf = append(w.buf, p...)
@@ -442,8 +440,6 @@ func (m model) View() string {
 	switch m.mode {
 	case modeRunning:
 		return m.viewRunning()
-	case modeResult:
-		return m.viewResult()
 	default:
 		return m.viewTable()
 	}
@@ -451,7 +447,7 @@ func (m model) View() string {
 
 func (m model) viewTable() string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("JumpKit - SSH Jump Chain Analyzer"))
+	b.WriteString(styleTitle.Render("JumpKit - SSH Jump Chain"))
 	b.WriteString("\n")
 	b.WriteString(m.renderHeader())
 	b.WriteString("\n")
@@ -486,7 +482,7 @@ func (m model) viewTable() string {
 
 func (m model) viewRunning() string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("JumpKit - Analyzing..."))
+	b.WriteString(styleTitle.Render("JumpKit - SSH Jump Chain"))
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("-", 70))
 	b.WriteString("\n")
@@ -495,28 +491,18 @@ func (m model) viewRunning() string {
 		b.WriteString("\n")
 	}
 	if len(m.logs) == 0 {
-		b.WriteString(styleDim.Render("  starting analysis..."))
+		b.WriteString(styleDim.Render("  starting..."))
 		b.WriteString("\n")
 	}
 	b.WriteString(strings.Repeat("-", 70))
-	b.WriteString("\n")
-	b.WriteString(styleDim.Render("  esc: cancel"))
-	return b.String()
-}
 
-func (m model) viewResult() string {
-	var b strings.Builder
-	b.WriteString(styleTitle.Render("JumpKit - Result"))
-	b.WriteString("\n")
-	b.WriteString(strings.Repeat("-", 70))
-	b.WriteString("\n")
-	for _, line := range m.logs {
-		b.WriteString(line)
+	if m.finished {
+		b.WriteString("\n\n")
+		b.WriteString(styleDim.Render("esc: back"))
+	} else {
 		b.WriteString("\n")
+		b.WriteString(styleDim.Render("  esc: cancel"))
 	}
-	b.WriteString(strings.Repeat("-", 70))
-	b.WriteString("\n\n")
-	b.WriteString(styleDim.Render("  esc: back"))
 	return b.String()
 }
 
@@ -633,8 +619,6 @@ func (m model) renderStatus() string {
 		keys = []string{"↑↓:select", "enter:ok", "esc:cancel"}
 	case modeSavePrompt:
 		keys = []string{"enter:save", "esc:cancel"}
-	case modeResult:
-		keys = []string{"any key:back"}
 	}
 	return styleDim.Render("  " + strings.Join(keys, " | "))
 }
