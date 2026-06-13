@@ -21,8 +21,17 @@ type HopConfig struct {
 	UseInternalDns bool     `json:"use_internal_dns"`
 }
 
+type SSHAction int
+
+const (
+	ActionConnect SSHAction = iota
+	ActionTunnel
+)
+
 type SSHCommand struct {
-	Command string
+	Command    string
+	Action     SSHAction
+	TunnelPort int
 }
 
 type HopResult struct {

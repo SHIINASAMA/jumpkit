@@ -13,6 +13,11 @@ import (
 
 const defaultSSHTimeout = 15 * time.Second
 
+type AnalysisOptions struct {
+	Action     core.SSHAction
+	TunnelPort int
+}
+
 type Analyzer struct {
 	log *logger.Logger
 }
@@ -23,7 +28,7 @@ func New(log *logger.Logger) *Analyzer {
 	}
 }
 
-func (a *Analyzer) Analyze(hops []core.HopConfig) *core.AnalysisResult {
+func (a *Analyzer) Analyze(hops []core.HopConfig, opts AnalysisOptions) *core.AnalysisResult {
 	if len(hops) == 0 {
 		return &core.AnalysisResult{Summary: "no hops provided"}
 	}
@@ -105,7 +110,7 @@ func (a *Analyzer) Analyze(hops []core.HopConfig) *core.AnalysisResult {
 		jumpChain = append(jumpChain, chainEntry)
 	}
 
-	result.SSHCommands = generateSSHCommands(hops, result)
+	result.SSHCommands = generateSSHCommands(hops, result, opts)
 	result.Summary = generateSummary(hops, result)
 
 	for _, cmd := range result.SSHCommands {
@@ -146,7 +151,7 @@ func portArg(port int) []string {
 	return nil
 }
 
-func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult) []core.SSHCommand {
+func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult, opts AnalysisOptions) []core.SSHCommand {
 	if len(hops) < 2 {
 		return nil
 	}
@@ -171,11 +176,26 @@ func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult) []c
 	if port == 0 {
 		port = 22
 	}
-	args = append(args, "-p", fmt.Sprintf("%d", port))
-	args = append(args, targetAddr)
+
+	switch opts.Action {
+	case core.ActionTunnel:
+		localPort := opts.TunnelPort
+		if localPort == 0 {
+			localPort = port
+		}
+		args = append(args, "-L", fmt.Sprintf("%d:%s:%d", localPort, targetAddr, port))
+		args = append(args, "-N")
+	default:
+		args = append(args, "-p", fmt.Sprintf("%d", port))
+		args = append(args, targetAddr)
+	}
 
 	cmd := fmt.Sprintf("ssh %s", strings.Join(args, " "))
-	return []core.SSHCommand{{Command: cmd}}
+	return []core.SSHCommand{{
+		Command:    cmd,
+		Action:     opts.Action,
+		TunnelPort: opts.TunnelPort,
+	}}
 }
 
 func generateSummary(hops []core.HopConfig, result *core.AnalysisResult) string {

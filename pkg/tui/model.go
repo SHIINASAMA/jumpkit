@@ -8,6 +8,7 @@ import (
 	"jumpkit/pkg/analyzer"
 	"jumpkit/pkg/config"
 	"jumpkit/pkg/core"
+	"jumpkit/pkg/executor"
 	"jumpkit/pkg/logger"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -54,6 +55,7 @@ const (
 	modeSelect
 	modeRunning
 	modeSavePrompt
+	modeTunnelPrompt
 )
 
 type model struct {
@@ -68,6 +70,7 @@ type model struct {
 	statusMsg  string
 	saveBuf    string
 	finished   bool
+	result     *core.AnalysisResult
 }
 
 func InitialModel(loadPath string) model {
@@ -92,6 +95,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForLog(msg.ch)
 	case doneMsg:
 		m.finished = true
+		m.result = msg.result
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -112,6 +116,8 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateRunning(k)
 	case modeSavePrompt:
 		return m.updateSavePrompt(k)
+	case modeTunnelPrompt:
+		return m.updateTunnelPrompt(k)
 	}
 	return m, nil
 }
@@ -269,7 +275,54 @@ func (m model) updateRunning(k string) (tea.Model, tea.Cmd) {
 		m.mode = modeNav
 		m.logs = nil
 		m.finished = false
+		m.result = nil
 		return m, nil
+	case "x":
+		if m.finished && m.result != nil && len(m.result.SSHCommands) > 0 {
+			return m, m.runConnect(m.result)
+		}
+	case "p":
+		if m.finished && m.result != nil && len(m.result.SSHCommands) > 0 {
+			m.mode = modeTunnelPrompt
+			m.saveBuf = ""
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func (m model) updateTunnelPrompt(k string) (tea.Model, tea.Cmd) {
+	switch k {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.mode = modeRunning
+		return m, nil
+	case "enter":
+		port, err := strconv.Atoi(strings.TrimSpace(m.saveBuf))
+		if err != nil || port <= 0 || port > 65535 {
+			m.statusMsg = styleErr.Render("invalid port")
+			m.mode = modeRunning
+			return m, nil
+		}
+		if m.result == nil || len(m.result.SSHCommands) == 0 {
+			m.mode = modeRunning
+			return m, nil
+		}
+		cmd := m.result.SSHCommands[0]
+		cmd.TunnelPort = port
+		cmd.Action = core.ActionTunnel
+		m.mode = modeRunning
+		return m, m.runConnect(m.result)
+	case "backspace":
+		if len(m.saveBuf) > 0 {
+			m.saveBuf = m.saveBuf[:len(m.saveBuf)-1]
+		}
+		return m, nil
+	default:
+		if len(k) == 1 && k >= "0" && k <= "9" {
+			m.saveBuf += k
+		}
 	}
 	return m, nil
 }
@@ -318,7 +371,9 @@ type logMsg struct {
 	line string
 	ch   chan string
 }
-type doneMsg struct{}
+type doneMsg struct {
+	result *core.AnalysisResult
+}
 
 func (w *channelWriter) Write(p []byte) (n int, err error) {
 	w.buf = append(w.buf, p...)
@@ -349,9 +404,27 @@ func (m model) runAnalysis(ch chan string) tea.Cmd {
 		log := logger.New(logger.LevelInfo)
 		log.SetOutput(&channelWriter{ch: ch})
 		a := analyzer.New(log)
-		a.Analyze(hops)
+		result := a.Analyze(hops, analyzer.AnalysisOptions{})
 		close(ch)
-		return doneMsg{}
+		return doneMsg{result: result}
+	}
+}
+
+func (m model) runConnect(result *core.AnalysisResult) tea.Cmd {
+	return func() tea.Msg {
+		if len(result.SSHCommands) == 0 {
+			return nil
+		}
+		cmd := result.SSHCommands[0]
+		hop := result.Hops[len(result.Hops)-1]
+		exec := &executor.SSHExecutor{
+			AuthType:  hop.AuthType,
+			AuthToken: hop.AuthToken,
+		}
+		if err := exec.Connect(cmd.Command); err != nil {
+			_ = err
+		}
+		return nil
 	}
 }
 
@@ -498,7 +571,11 @@ func (m model) viewRunning() string {
 
 	if m.finished {
 		b.WriteString("\n\n")
-		b.WriteString(styleDim.Render("esc: back"))
+		if m.mode == modeTunnelPrompt {
+			b.WriteString(m.renderTunnelPrompt())
+		} else {
+			b.WriteString(styleDim.Render("esc: back | x: connect | p: tunnel"))
+		}
 	} else {
 		b.WriteString("\n")
 		b.WriteString(styleDim.Render("  esc: cancel"))
@@ -514,6 +591,16 @@ func (m model) renderSavePrompt() string {
 	b.WriteString(styleEdit.Render(fmt.Sprintf("  > %s_", m.saveBuf)))
 	b.WriteString("\n\n")
 	b.WriteString(styleDim.Render("  enter: save | esc: cancel"))
+	return b.String()
+}
+
+func (m model) renderTunnelPrompt() string {
+	var b strings.Builder
+	b.WriteString(styleDim.Render("  Local tunnel port:"))
+	b.WriteString("\n")
+	b.WriteString(styleEdit.Render(fmt.Sprintf("  > %s_", m.saveBuf)))
+	b.WriteString("\n\n")
+	b.WriteString(styleDim.Render("  enter: connect | esc: cancel"))
 	return b.String()
 }
 

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -42,4 +43,51 @@ func (e *SSHExecutor) Execute(target, command string) (string, error) {
 	}
 
 	return stdout.String(), nil
+}
+
+func (e *SSHExecutor) Connect(sshCommand string) error {
+	args := shellSplit(sshCommand)
+	if len(args) == 0 {
+		return fmt.Errorf("empty ssh command")
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+
+	if e.AuthType == core.AuthTypePassword && e.AuthToken != "" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd.Stdin = strings.NewReader(e.AuthToken + "\n")
+	} else {
+		cmd.Stdin = os.Stdin
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+func shellSplit(s string) []string {
+	var parts []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case c == ' ' && !inSingle && !inDouble:
+			if current.Len() > 0 {
+				parts = append(parts, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteByte(c)
+		}
+	}
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	return parts
 }

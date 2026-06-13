@@ -9,6 +9,8 @@ require (
 )
 
 require (
+	github.com/alexflint/go-arg v1.6.1 // indirect
+	github.com/alexflint/go-scalar v1.2.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
