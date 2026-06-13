@@ -23,8 +23,6 @@ type HopConfig struct {
 
 type SSHCommand struct {
 	Command string
-	Jump    string
-	Target  string
 }
 
 type HopResult struct {

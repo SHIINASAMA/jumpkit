@@ -4,8 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"syscall"
-	"unsafe"
+
+	"golang.org/x/term"
 
 	"jumpkit/pkg/analyzer"
 	"jumpkit/pkg/config"
@@ -58,47 +58,11 @@ func runCLI(path string) {
 
 func readPassword() (string, error) {
 	fd := int(os.Stdin.Fd())
-	old, err := makeRaw(fd)
+	token, err := term.ReadPassword(fd)
 	if err != nil {
 		return "", err
 	}
-	defer restore(fd, old)
-
-	var buf [4]byte
-	var result []byte
-	for {
-		n, err := os.Stdin.Read(buf[:])
-		if err != nil {
-			return "", err
-		}
-		for i := 0; i < n; i++ {
-			if buf[i] == '\n' || buf[i] == '\r' {
-				return string(result), nil
-			}
-			result = append(result, buf[i])
-		}
-	}
-}
-
-func makeRaw(fd int) (*syscall.Termios, error) {
-	var old syscall.Termios
-	if _, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGETA, uintptr(noescape(unsafe.Pointer(&old))), 0, 0, 0); err != 0 {
-		return nil, fmt.Errorf("tcgetattr: %w", err)
-	}
-	raw := old
-	raw.Lflag &^= syscall.ECHO | syscall.ECHONL | syscall.ICANON
-	if _, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSETA, uintptr(noescape(unsafe.Pointer(&raw))), 0, 0, 0); err != 0 {
-		return nil, fmt.Errorf("tcsetattr: %w", err)
-	}
-	return &old, nil
-}
-
-func restore(fd int, old *syscall.Termios) {
-	syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSETA, uintptr(noescape(unsafe.Pointer(old))), 0, 0, 0)
-}
-
-func noescape(p unsafe.Pointer) unsafe.Pointer {
-	return p
+	return string(token), nil
 }
 
 func runTUI(loadPath string) {

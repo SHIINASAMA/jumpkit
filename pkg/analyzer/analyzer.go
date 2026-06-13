@@ -3,12 +3,15 @@ package analyzer
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"jumpkit/pkg/core"
 	"jumpkit/pkg/executor"
 	"jumpkit/pkg/logger"
 	"jumpkit/pkg/resolver"
 )
+
+const defaultSSHTimeout = 15 * time.Second
 
 type Analyzer struct {
 	log *logger.Logger
@@ -54,26 +57,14 @@ func (a *Analyzer) Analyze(hops []core.HopConfig) *core.AnalysisResult {
 			SSHOptions: opts,
 			AuthType:   hop.AuthType,
 			AuthToken:  hop.AuthToken,
+			Timeout:    defaultSSHTimeout,
 		}
 
 		hopResult := core.HopResult{HopConfig: hop}
 
-		if resolved {
-			if i == len(hops)-1 && hop.UseInternalDns {
-				a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
-			} else {
-				out, err := exec.Execute(sshTarget, "echo ok")
-				hopResult.Output = out
-				hopResult.Err = err
-				hopResult.Command = "echo ok"
-				if err != nil {
-					a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
-					a.log.Print("    %s", err)
-				} else {
-					a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
-				}
-			}
-		} else {
+		doDNS := !resolved && !hop.UseInternalDns
+
+		if doDNS {
 			cmd := resolver.FormatDNSCommand(dnsCmd, targetDomain)
 			hopResult.Command = cmd
 			out, err := exec.Execute(sshTarget, cmd)
@@ -96,6 +87,17 @@ func (a *Analyzer) Analyze(hops []core.HopConfig) *core.AnalysisResult {
 						resolved = true
 					}
 				}
+			}
+		} else {
+			out, err := exec.Execute(sshTarget, "echo ok")
+			hopResult.Output = out
+			hopResult.Err = err
+			hopResult.Command = "echo ok"
+			if err != nil {
+				a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
+				a.log.Print("    %s", err)
+			} else {
+				a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
 			}
 		}
 
@@ -149,12 +151,7 @@ func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult) []c
 		return nil
 	}
 
-	var commands []core.SSHCommand
-
 	targetHop := hops[len(hops)-1]
-	if targetHop.User == "" {
-		targetHop.User = "admin"
-	}
 
 	var jumpHosts []string
 	for i := 0; i < len(hops)-1; i++ {
@@ -175,16 +172,10 @@ func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult) []c
 		port = 22
 	}
 	args = append(args, "-p", fmt.Sprintf("%d", port))
-	args = append(args, fmt.Sprintf("%s@%s", targetHop.User, targetAddr))
+	args = append(args, targetAddr)
 
 	cmd := fmt.Sprintf("ssh %s", strings.Join(args, " "))
-	commands = append(commands, core.SSHCommand{
-		Command: cmd,
-		Jump:    strings.Join(jumpHosts, ","),
-		Target:  targetAddr,
-	})
-
-	return commands
+	return []core.SSHCommand{{Command: cmd}}
 }
 
 func generateSummary(hops []core.HopConfig, result *core.AnalysisResult) string {
