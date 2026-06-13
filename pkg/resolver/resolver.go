@@ -53,12 +53,14 @@ func ParseDNSOutput(output, command string) []string {
 		}
 
 		if strings.HasPrefix(command, "nslookup") {
-			if strings.HasPrefix(line, "Address:") {
+			if strings.HasPrefix(line, "Addresses:") || strings.HasPrefix(line, "Address:") {
 				parts := strings.SplitN(line, ":", 2)
 				if len(parts) == 2 {
-					addr := strings.TrimSpace(parts[1])
-					if isIPAddress(addr) {
-						ips = append(ips, addr)
+					for _, chunk := range strings.Split(parts[1], ",") {
+						addr := strings.TrimSpace(chunk)
+						if isIPAddress(addr) {
+							ips = append(ips, addr)
+						}
 					}
 				}
 			}
