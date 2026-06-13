@@ -1,1 +1,3 @@
-# jumpkit
+# JumpKit
+
+SSH Jump Chain Analyzer
