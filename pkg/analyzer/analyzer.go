@@ -57,6 +57,7 @@ func (a *Analyzer) Analyze(hops []core.HopConfig, opts AnalysisOptions) *core.An
 
 		opts := buildJumpOptions(jumpChain)
 		opts = append(opts, portArg(hop.Port)...)
+		opts = append(opts, identityArgs(hops[:i+1])...)
 		opts = append(opts, "-o", "StrictHostKeyChecking=no", "-o", "ForwardAgent=yes")
 		exec := &executor.SSHExecutor{
 			SSHOptions: opts,
@@ -78,13 +79,13 @@ func (a *Analyzer) Analyze(hops []core.HopConfig, opts AnalysisOptions) *core.An
 
 			if err != nil {
 				a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
-				a.log.Print("    %s", err)
+				a.log.Info("%s", err)
 			} else {
 				a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
 				ips := resolver.ParseDNSOutput(out, cmd)
 				hopResult.IPs = ips
 				if len(ips) > 0 {
-					a.log.Print("    dns %s → %s", targetDomain, strings.Join(ips, ", "))
+					a.log.Info("dns %s → %s", targetDomain, strings.Join(ips, ", "))
 					if result.FirstResolved == nil {
 						first := hopResult
 						result.FirstResolved = &first
@@ -100,7 +101,7 @@ func (a *Analyzer) Analyze(hops []core.HopConfig, opts AnalysisOptions) *core.An
 			hopResult.Command = "echo ok"
 			if err != nil {
 				a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
-				a.log.Print("    %s", err)
+				a.log.Info("%s", err)
 			} else {
 				a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
 			}
@@ -114,7 +115,7 @@ func (a *Analyzer) Analyze(hops []core.HopConfig, opts AnalysisOptions) *core.An
 	result.Summary = generateSummary(hops, result)
 
 	for _, cmd := range result.SSHCommands {
-		a.log.Print("  %s", cmd.Command)
+		a.log.Info("%s", cmd)
 	}
 
 	return result
@@ -151,6 +152,19 @@ func portArg(port int) []string {
 	return nil
 }
 
+func identityArgs(hops []core.HopConfig) []string {
+	var args []string
+	for _, hop := range hops {
+		if hop.AuthType == core.AuthTypePrivateKey && hop.AuthToken != "" {
+			args = append(args, "-i", hop.AuthToken)
+		}
+	}
+	if len(args) > 0 {
+		args = append(args, "-o", "IdentitiesOnly=yes")
+	}
+	return args
+}
+
 func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult, opts AnalysisOptions) []core.SSHCommand {
 	if len(hops) < 2 {
 		return nil
@@ -169,6 +183,15 @@ func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult, opt
 	}
 
 	var args []string
+	var execArgs []string
+
+	execArgs = append(execArgs, identityArgs(hops)...)
+	execArgs = append(execArgs, "-o", "StrictHostKeyChecking=no", "-o", "ForwardAgent=yes")
+
+	if targetHop.AuthType == core.AuthTypePassword {
+		execArgs = append(execArgs, "-o", "PreferredAuthentications=password")
+	}
+
 	if len(jumpHosts) > 0 {
 		args = append(args, "-J", strings.Join(jumpHosts, ","))
 	}
@@ -183,17 +206,35 @@ func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult, opt
 		if localPort == 0 {
 			localPort = port
 		}
-		args = append(args, "-L", fmt.Sprintf("%d:%s:%d", localPort, targetAddr, port))
-		args = append(args, "-N")
+		args = append(args, "-D", fmt.Sprintf("%d", localPort))
+		if port != 0 && port != 22 {
+			args = append(args, "-p", fmt.Sprintf("%d", port))
+		}
+		if targetHop.User != "" {
+			args = append(args, fmt.Sprintf("%s@%s", targetHop.User, targetAddr))
+		} else {
+			args = append(args, targetAddr)
+		}
 	default:
-		args = append(args, "-t")
-		args = append(args, "-p", fmt.Sprintf("%d", port))
-		args = append(args, formatSSHTarget(targetHop, false))
+		if targetHop.AuthType != core.AuthTypePassword {
+			execArgs = append(execArgs, "-t")
+		}
+		if port != 0 && port != 22 {
+			args = append(args, "-p", fmt.Sprintf("%d", port))
+		}
+		if targetHop.User != "" {
+			args = append(args, fmt.Sprintf("%s@%s", targetHop.User, targetAddr))
+		} else {
+			args = append(args, targetAddr)
+		}
 	}
 
-	cmd := fmt.Sprintf("ssh %s", strings.Join(args, " "))
+	displayCmd := fmt.Sprintf("ssh %s", strings.Join(args, " "))
+	allArgs := append(execArgs, args...)
+	fullCmd := fmt.Sprintf("ssh %s", strings.Join(allArgs, " "))
 	return []core.SSHCommand{{
-		Command:    cmd,
+		Command:    fullCmd,
+		Display:    displayCmd,
 		Action:     opts.Action,
 		TunnelPort: opts.TunnelPort,
 	}}

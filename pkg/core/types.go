@@ -30,6 +30,7 @@ const (
 
 type SSHCommand struct {
 	Command    string
+	Display    string
 	Action     SSHAction
 	TunnelPort int
 }
@@ -59,6 +60,9 @@ func (h HopConfig) String() string {
 }
 
 func (c SSHCommand) String() string {
+	if c.Display != "" {
+		return c.Display
+	}
 	return c.Command
 }
 

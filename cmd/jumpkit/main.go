@@ -77,7 +77,7 @@ func runCLI(a args) {
 	ana := analyzer.New(log)
 	result := ana.Analyze(hops, opts)
 
-	if action == core.ActionConnect || action == core.ActionTunnel {
+	if a.Connect || a.Tunnel > 0 {
 		if len(result.SSHCommands) == 0 {
 			fmt.Fprintf(os.Stderr, "No SSH command generated\n")
 			os.Exit(1)

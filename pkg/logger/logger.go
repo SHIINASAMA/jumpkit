@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 )
 
 type Level int
@@ -41,7 +40,7 @@ func (l *Logger) Debug(format string, args ...interface{}) {
 }
 
 func (l *Logger) Info(format string, args ...interface{}) {
-	l.log(LevelInfo, "INF", format, args...)
+	l.log(LevelInfo, "", format, args...)
 }
 
 func (l *Logger) Warn(format string, args ...interface{}) {
@@ -58,23 +57,21 @@ func (l *Logger) log(level Level, tag, format string, args ...interface{}) {
 	if level < l.level {
 		return
 	}
-	ts := time.Now().Format("15:04:05")
 	msg := fmt.Sprintf(format, args...)
-	fmt.Fprintf(l.output, "[%s] %s %s\n", ts, tag, msg)
+	if tag == "" {
+		fmt.Fprintln(l.output, msg)
+	} else {
+		fmt.Fprintf(l.output, "%s %s\n", tag, msg)
+	}
 }
 
 func (l *Logger) Print(format string, args ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	msg := fmt.Sprintf(format, args...)
-	fmt.Fprintln(l.output, msg)
+	l.log(LevelInfo, "", format, args...)
 }
 
 func (l *Logger) Step(step int, total int, format string, args ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	msg := fmt.Sprintf(format, args...)
-	fmt.Fprintf(l.output, "  [%d/%d] %s\n", step, total, msg)
+	l.log(LevelInfo, fmt.Sprintf("[%d/%d]", step, total), "%s", msg)
 }
 
 func (l *Logger) Section(title string) {
