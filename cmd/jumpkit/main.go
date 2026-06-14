@@ -92,7 +92,7 @@ func runCLI(a args) {
 }
 
 func executorFromResult(result *core.AnalysisResult) *executor.SSHExecutor {
-	e := &executor.SSHExecutor{Timeout: 0}
+	e := &executor.SSHExecutor{Timeout: 0, PasswordMap: executor.BuildPasswordMap(result.Hops)}
 	if len(result.Hops) > 0 {
 		hop := result.Hops[len(result.Hops)-1]
 		e.AuthType = hop.AuthType

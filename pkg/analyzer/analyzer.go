@@ -42,18 +42,20 @@ func (a *Analyzer) Analyze(hops []core.HopConfig, opts AnalysisOptions) *core.An
 		}
 	}
 
-	targetDomain := hops[len(hops)-1].Host
-
-	result := &core.AnalysisResult{
-		Hops: hops,
-	}
+	result := &core.AnalysisResult{Hops: hops}
 
 	var jumpChain []string
-	resolved := false
+	resolvedIPs := make(map[int]string) // hop index → first resolved IP
 
 	for i, hop := range hops {
-		sshTarget := formatSSHTarget(hop, false)
-		chainEntry := formatSSHTarget(hop, true)
+		// If this hop was resolved by the previous hop, use the IP
+		hopHost := hop.Host
+		if ip, ok := resolvedIPs[i]; ok {
+			hopHost = ip
+		}
+
+		sshTarget := formatSSHTargetWithAddr(hop, hopHost, false)
+		chainEntry := formatSSHTargetWithAddr(hop, hopHost, true)
 
 		opts := buildJumpOptions(jumpChain)
 		opts = append(opts, portArg(hop.Port)...)
@@ -68,50 +70,73 @@ func (a *Analyzer) Analyze(hops []core.HopConfig, opts AnalysisOptions) *core.An
 
 		hopResult := core.HopResult{HopConfig: hop}
 
-		doDNS := !resolved && !hop.UseInternalDns
-
-		if doDNS {
-			cmd := resolver.FormatDNSCommand(dnsCmd, targetDomain)
-			hopResult.Command = cmd
-			out, err := exec.Execute(sshTarget, cmd)
-			hopResult.Output = out
-			hopResult.Err = err
-
-			if err != nil {
-				a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
-				a.log.Info("%s", err)
-			} else {
-				a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
-				ips := resolver.ParseDNSOutput(out, cmd)
-				hopResult.IPs = ips
-				if len(ips) > 0 {
-					a.log.Info("dns %s → %s", targetDomain, strings.Join(ips, ", "))
-					if result.FirstResolved == nil {
-						first := hopResult
-						result.FirstResolved = &first
-						result.TargetIP = hopResult.IPs[0]
-						resolved = true
-					}
-				}
-			}
+		// Test connectivity to this hop
+		out, err := exec.Execute(sshTarget, "echo ok")
+		hopResult.Output = out
+		hopResult.Err = err
+		hopResult.Command = "echo ok"
+		if err != nil {
+			a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
+			a.log.Info("%s", err)
 		} else {
-			out, err := exec.Execute(sshTarget, "echo ok")
-			hopResult.Output = out
-			hopResult.Err = err
-			hopResult.Command = "echo ok"
-			if err != nil {
-				a.log.Step(i+1, len(hops), "%s ✗", hop.Host)
-				a.log.Info("%s", err)
-			} else {
-				a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
-			}
+			a.log.Step(i+1, len(hops), "%s ✓", hop.Host)
 		}
 
 		result.Results = append(result.Results, hopResult)
 		jumpChain = append(jumpChain, chainEntry)
+
+		// If this hop failed, stop — we can't resolve further internal hosts
+		if err != nil {
+			break
+		}
+
+		// Resolve all unresolved internal-DNS hops ahead from this hop
+		for j := i + 1; j < len(hops); j++ {
+			if _, ok := resolvedIPs[j]; ok {
+				continue
+			}
+			if !hops[j].UseInternalDns {
+				continue
+			}
+			nextDomain := hops[j].Host
+			dnsCmdLine := resolver.FormatDNSCommand(dnsCmd, nextDomain)
+			dnsExec := &executor.SSHExecutor{
+				SSHOptions: opts,
+				AuthType:   hop.AuthType,
+				AuthToken:  hop.AuthToken,
+				Timeout:    defaultSSHTimeout,
+			}
+			dnsOut, dnsErr := dnsExec.Execute(sshTarget, dnsCmdLine)
+			dnsResult := core.HopResult{
+				HopConfig: hops[j],
+				Command:   dnsCmdLine,
+				Output:    dnsOut,
+				Err:       dnsErr,
+			}
+			if dnsErr != nil {
+				a.log.Info("dns %s failed: %v", nextDomain, dnsErr)
+			} else {
+				ips := resolver.ParseDNSOutput(dnsOut, dnsCmdLine)
+				dnsResult.IPs = ips
+				if len(ips) > 0 {
+					a.log.Info("dns %s → %s", nextDomain, strings.Join(ips, ", "))
+					resolvedIPs[j] = ips[0]
+					if result.FirstResolved == nil {
+						first := dnsResult
+						result.FirstResolved = &first
+					}
+				}
+			}
+			result.Results = append(result.Results, dnsResult)
+		}
 	}
 
-	result.SSHCommands = generateSSHCommands(hops, result, opts)
+	// Set target IP from the last hop's resolved address
+	if ip, ok := resolvedIPs[len(hops)-1]; ok {
+		result.TargetIP = ip
+	}
+
+	result.SSHCommands = generateSSHCommands(hops, result, resolvedIPs, opts)
 	result.Summary = generateSummary(hops, result)
 
 	for _, cmd := range result.SSHCommands {
@@ -129,11 +154,15 @@ func buildJumpOptions(jumpChain []string) []string {
 }
 
 func formatSSHTarget(hop core.HopConfig, withPort bool) string {
+	return formatSSHTargetWithAddr(hop, hop.Host, withPort)
+}
+
+func formatSSHTargetWithAddr(hop core.HopConfig, addr string, withPort bool) string {
 	var target string
 	if hop.User != "" {
-		target = fmt.Sprintf("%s@%s", hop.User, hop.Host)
+		target = fmt.Sprintf("%s@%s", hop.User, addr)
 	} else {
-		target = hop.Host
+		target = addr
 	}
 	if withPort {
 		port := hop.Port
@@ -165,16 +194,21 @@ func identityArgs(hops []core.HopConfig) []string {
 	return args
 }
 
-func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult, opts AnalysisOptions) []core.SSHCommand {
+func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult, resolvedIPs map[int]string, opts AnalysisOptions) []core.SSHCommand {
 	if len(hops) < 2 {
 		return nil
 	}
 
 	targetHop := hops[len(hops)-1]
 
+	// Build jump hosts, using resolved IPs for internal-DNS hops
 	var jumpHosts []string
 	for i := 0; i < len(hops)-1; i++ {
-		jumpHosts = append(jumpHosts, formatSSHTarget(hops[i], true))
+		addr := hops[i].Host
+		if ip, ok := resolvedIPs[i]; ok {
+			addr = ip
+		}
+		jumpHosts = append(jumpHosts, formatSSHTargetWithAddr(hops[i], addr, true))
 	}
 
 	targetAddr := targetHop.Host
@@ -243,15 +277,15 @@ func generateSSHCommands(hops []core.HopConfig, result *core.AnalysisResult, opt
 func generateSummary(hops []core.HopConfig, result *core.AnalysisResult) string {
 	var parts []string
 
-	successCount := 0
+	dnsCount := 0
 	for _, res := range result.Results {
 		if len(res.IPs) > 0 {
-			successCount++
+			dnsCount++
 		}
 	}
 
-	parts = append(parts, fmt.Sprintf("Analyzed %d hops, %d successful DNS resolutions",
-		len(hops), successCount))
+	parts = append(parts, fmt.Sprintf("Analyzed %d hops, %d DNS resolutions",
+		len(hops), dnsCount))
 
 	if result.FirstResolved != nil {
 		parts = append(parts, fmt.Sprintf("First resolution at: %s",

@@ -20,7 +20,8 @@ type SSHExecutor struct {
 	SSHOptions []string
 	AuthType   core.AuthType
 	AuthToken  string
-	Timeout    time.Duration
+	PasswordMap map[string]string // user@host → password for multi-hop proxy jumps
+	Timeout     time.Duration
 }
 
 // Execute runs a non-interactive SSH command, capturing stdout.
@@ -49,9 +50,10 @@ func runSSH(e *SSHExecutor, sshArgs []string, capture bool) (string, error) {
 	}
 
 	hasPassword := e.AuthType == core.AuthTypePassword && e.AuthToken != ""
+	hasPasswordMap := len(e.PasswordMap) > 0
 
-	if hasPassword {
-		askpass, cleanup, err := setupAskPass(e.AuthToken)
+	if hasPassword || hasPasswordMap {
+		askpass, cleanup, err := setupAskPass(e.PasswordMap, e.AuthToken)
 		if err != nil {
 			return "", err
 		}
@@ -61,25 +63,51 @@ func runSSH(e *SSHExecutor, sshArgs []string, capture bool) (string, error) {
 	}
 
 	var stdout bytes.Buffer
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var stderr bytes.Buffer
+	if capture {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 	cmd.Stdin = os.Stdin
 
 	if err := cmd.Run(); err != nil {
+		if capture {
+			errMsg := stderr.String()
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			return stdout.String(), fmt.Errorf("ssh: %s", errMsg)
+		}
 		return "", err
 	}
 
-	_ = capture
-	_ = stdout
-	return "", nil
+	return stdout.String(), nil
 }
 
-func setupAskPass(password string) ([]string, func(), error) {
+func setupAskPass(passwordMap map[string]string, fallback string) ([]string, func(), error) {
 	f, err := os.CreateTemp("", "jumpkit-askpass-*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create askpass: %w", err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' '%s'\n", escapeSingleQuote(password))
+
+	var script string
+	if len(passwordMap) > 0 {
+		var buf strings.Builder
+		buf.WriteString("#!/bin/sh\n")
+		buf.WriteString("prompt=\"$SSH_ASKPASS_PROMPT\"\n")
+		for userHost, pass := range passwordMap {
+			escapedUserHost := shellQuotePattern(userHost)
+			escapedPass := escapeSingleQuote(pass)
+			buf.WriteString(fmt.Sprintf("case \"$prompt\" in\n  *%s*) printf '%%s' '%s' ; exit ;;\nesac\n", escapedUserHost, escapedPass))
+		}
+		buf.WriteString(fmt.Sprintf("printf '%%s' '%s'\n", escapeSingleQuote(fallback)))
+		script = buf.String()
+	} else {
+		script = fmt.Sprintf("#!/bin/sh\nprintf '%%s' '%s'\n", escapeSingleQuote(fallback))
+	}
 	if _, err := f.WriteString(script); err != nil {
 		f.Close()
 		os.Remove(f.Name())
@@ -114,6 +142,12 @@ func escapeSingleQuote(s string) string {
 		}
 	}
 	return string(result)
+}
+
+// shellQuotePattern escapes a string for shell pattern matching.
+// It wraps in single quotes, handling embedded single quotes.
+func shellQuotePattern(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func buildSSHArgs(target string, options []string, authType core.AuthType, authToken, command string) []string {

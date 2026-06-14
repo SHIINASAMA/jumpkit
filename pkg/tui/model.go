@@ -418,8 +418,9 @@ func (m model) runConnect(result *core.AnalysisResult) tea.Cmd {
 		cmd := result.SSHCommands[0]
 		hop := result.Hops[len(result.Hops)-1]
 		exec := &executor.SSHExecutor{
-			AuthType:  hop.AuthType,
-			AuthToken: hop.AuthToken,
+			AuthType:    hop.AuthType,
+			AuthToken:   hop.AuthToken,
+			PasswordMap: executor.BuildPasswordMap(result.Hops),
 		}
 		if err := exec.Connect(cmd.Command); err != nil {
 			_ = err
